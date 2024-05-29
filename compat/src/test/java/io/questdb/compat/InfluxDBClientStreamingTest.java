@@ -67,12 +67,12 @@ public class InfluxDBClientStreamingTest extends AbstractTest {
             }
 
             LOG.info().$("=== Restarting server...").$();
-            serverMain = Misc.free(serverMain);
+            serverMain.close();
             serverMain = ServerMain.create(root);
             serverMain.start();
             int pointsAfterRestart = pointCounter.get();
 
-            // Wait more points to be sent after restart
+            // Wait for more points to be sent after restart
             while (pointCounter.get() == pointsAfterRestart && sendException.get() == null) {
                 Os.pause();
             }
@@ -80,7 +80,7 @@ public class InfluxDBClientStreamingTest extends AbstractTest {
                 throw new RuntimeException(sendException.get());
             }
 
-            // Stop and wait sending thread to finish
+            // Stop and wait for the sending thread to finish
             stop.set(true);
             countDownLatch.await();
 
@@ -90,8 +90,7 @@ public class InfluxDBClientStreamingTest extends AbstractTest {
 
             final ServerMain server = serverMain;
             assertEventually(() -> {
-                // InfluxDB client can send the last batch of points
-                // after the client object is closed from the background thread.
+                // InfluxDB client can send the last batch of points after the client object is closed from the background thread.
                 server.awaitTable(tableName);
                 try {
                     assertSql(server.getEngine(),
@@ -103,7 +102,9 @@ public class InfluxDBClientStreamingTest extends AbstractTest {
                 }
             });
         } finally {
-            Misc.free(serverMain);
+            if (serverMain != null) {
+                serverMain.close();
+            }
         }
     }
 
@@ -118,36 +119,34 @@ public class InfluxDBClientStreamingTest extends AbstractTest {
     ) {
         new Thread(() -> {
             int points = 0;
-            try {
-                try (final InfluxDB influxDB = InfluxDBUtils.getConnection(serverMain)) {
-                    influxDB.setLogLevel(InfluxDB.LogLevel.BASIC);
+            try (final InfluxDB influxDB = InfluxDBUtils.getConnection(serverMain)) {
+                influxDB.setLogLevel(InfluxDB.LogLevel.BASIC);
 
-                    countDownLatch.countDown();
-                    influxDB.enableBatch(
-                            BatchOptions.DEFAULTS
-                                    .actions(batchSize)
-                                    .bufferLimit(batchSize * 1024)
-                    );
+                countDownLatch.countDown();
+                influxDB.enableBatch(
+                        BatchOptions.DEFAULTS
+                                .actions(batchSize)
+                                .bufferLimit(batchSize * 1024)
+                );
 
-                    while (!stop.get()) {
-                        try {
-                            Point point = Point.measurement(tableName)
-                                    .tag("tag1", "value1")
-                                    .addField("value", 55.15d)
-                                    .time(Instant.now().minusSeconds(-10).toEpochMilli(), TimeUnit.MILLISECONDS)
-                                    .build();
+                while (!stop.get()) {
+                    try {
+                        Point point = Point.measurement(tableName)
+                                .tag("tag1", "value1")
+                                .addField("value", 55.15d)
+                                .time(Instant.now().toEpochMilli(), TimeUnit.MILLISECONDS)
+                                .build();
 
-                            influxDB.write(point);
-                            points++;
-                            pointCounter.incrementAndGet();
-                        } catch (Throwable e) {
-                            LOG.error().$("Error sending points ").$(e).$();
-                            exception.set(e);
-                            break;
-                        }
+                        influxDB.write(point);
+                        points++;
+                        pointCounter.incrementAndGet();
+                    } catch (Throwable e) {
+                        LOG.error().$("Error sending points ").$(e).$();
+                        exception.set(e);
+                        break;
                     }
-                    influxDB.flush();
                 }
+                influxDB.flush();
             } finally {
                 LOG.info().$("=== Sent ").$(points).$(" points").$();
                 countDownLatch.countDown();
